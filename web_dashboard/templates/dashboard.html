@@ -60,7 +60,7 @@
           <i class="fas fa-stop"></i> Stop
         </button>
         <span class="ms-2">
-          Status: <span class="badge bg-success" id="agentStatus">Idle</span>
+          Status: <span class="badge bg-secondary" id="agentStatus">Loading…</span>
         </span>
       </div>
     </div>
@@ -133,23 +133,25 @@
 
 {% block scripts %}
 <script>
-  function startAgent() {
-    fetch('/api/agent/start', { method: 'POST' })
+  function paintStatus(status) {
+    var el = document.getElementById('agentStatus');
+    el.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    el.className = 'badge ' + (status === 'running' ? 'bg-success' : status === 'paused' ? 'bg-warning text-dark' : 'bg-secondary');
+  }
+  function agentAction(action) {
+    fetch('/api/agent/' + action, { method: 'POST' })
       .then(r => r.json())
-      .then(d => { alert(d.message); location.reload(); })
-      .catch(() => alert('Failed to start agent'));
+      .then(d => { if (d.status) paintStatus(d.status); })
+      .catch(() => alert('Failed to update agent'));
   }
-  function pauseAgent() {
-    document.getElementById('agentStatus').textContent = 'Paused';
-    document.getElementById('agentStatus').className = 'badge bg-warning text-dark';
+  function startAgent() { agentAction('start'); }
+  function pauseAgent() { agentAction('pause'); }
+  function stopAgent() { agentAction('stop'); }
+  function refreshStatus() {
+    fetch('/api/agent/status').then(r => r.json()).then(d => paintStatus(d.status)).catch(() => {});
   }
-  function stopAgent() {
-    fetch('/api/agent/stop', { method: 'POST' })
-      .then(r => r.json())
-      .then(d => { alert(d.message); location.reload(); })
-      .catch(() => alert('Failed to stop agent'));
-  }
-  // Auto-refresh every 30 seconds
-  setInterval(() => location.reload(), 30000);
+  refreshStatus();
+  // Poll status instead of reloading the whole page every 30s.
+  setInterval(refreshStatus, 30000);
 </script>
 {% endblock %}

@@ -24,7 +24,10 @@ app = Flask(__name__)
 
 # IMPORTANT: Use environment variable or generate random key
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())
-app.config['SESSION_COOKIE_SECURE'] = True
+# Secure cookies only make sense over HTTPS (production). Forcing them on
+# local http development makes the browser drop the session cookie, so
+# login appears to succeed and then immediately bounces back to /login.
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('FLASK_ENV') == 'production'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
@@ -36,8 +39,10 @@ os.makedirs(os.path.dirname(db_path), exist_ok=True)
 tracker = ApplicationTracker(db_path)
 
 # User credentials from environment variables
+# Fallback matches web_dashboard/.env.example. On Render (and any real
+# deployment) ADMIN_USERNAME / ADMIN_PASSWORD env vars override this.
 USERS = {
-    os.environ.get('ADMIN_USERNAME', 'admin'): os.environ.get('ADMIN_PASSWORD', 'admin')
+    os.environ.get('ADMIN_USERNAME', 'admin'): os.environ.get('ADMIN_PASSWORD', 'password')
 }
 
 def login_required(f):
@@ -65,8 +70,11 @@ def login():
             session['username'] = username
             session.permanent = True
             flash('✅ Login successful!', 'success')
-            next_page = request.args.get('next')
-            return redirect(next_page or url_for('dashboard'))
+            next_page = request.args.get('next') or ''
+            # Only allow local paths, never an absolute/external URL.
+            if not next_page.startswith('/') or next_page.startswith('//'):
+                next_page = url_for('dashboard')
+            return redirect(next_page)
         else:
             error = '❌ Invalid username or password'
             flash(error, 'danger')
@@ -109,7 +117,11 @@ def dashboard():
 @login_required
 def applications():
     status_filter = request.args.get('status', 'all')
+    if status_filter not in ('all', 'applied', 'interview', 'offer', 'rejected', 'withdrawn'):
+        status_filter = 'all'
     date_range = request.args.get('range', '30')
+    if date_range not in ('7', '30', '90', '365'):
+        date_range = '30'
     
     query = '''
         SELECT * FROM applications 
@@ -166,7 +178,7 @@ def settings():
 @login_required
 def api_stats():
     try:
-        days = request.args.get('days', 30, type=int)
+        days = max(1, min(request.args.get('days', 30, type=int) or 30, 3650))
         stats = tracker.get_stats(days=days)
         return jsonify(stats)
     except Exception as e:
@@ -176,7 +188,7 @@ def api_stats():
 @login_required
 def api_recent_applications():
     try:
-        limit = request.args.get('limit', 20, type=int)
+        limit = max(1, min(request.args.get('limit', 20, type=int) or 20, 100))
         apps = tracker.conn.execute('''
             SELECT * FROM applications 
             ORDER BY application_date DESC 
@@ -195,33 +207,72 @@ def health_check():
         'version': '1.0.0'
     })
 
+# Real (in-memory) agent control state. Previously start/stop returned
+# success without changing anything and status always said "running".
+# Note: this dashboard has no job-board scraping engine wired in, so this
+# state honestly tracks the control setting only; it does not by itself
+# submit applications anywhere.
+AGENT_STATE = {'status': 'idle', 'since': None, 'last_activity': None}
+
+def _set_agent_state(status):
+    AGENT_STATE['status'] = status
+    AGENT_STATE['last_activity'] = datetime.now().isoformat()
+    if AGENT_STATE['since'] is None or status in ('running', 'idle'):
+        AGENT_STATE['since'] = AGENT_STATE['last_activity']
+    return jsonify({
+        'success': True,
+        'status': AGENT_STATE['status'],
+        'message': f"Agent {status}",
+        'timestamp': AGENT_STATE['last_activity']
+    })
+
 @app.route('/api/agent/start', methods=['POST'])
 @login_required
 def start_agent():
-    return jsonify({
-        'success': True,
-        'message': 'Agent started successfully',
-        'timestamp': datetime.now().isoformat()
-    })
+    return _set_agent_state('running')
+
+@app.route('/api/agent/pause', methods=['POST'])
+@login_required
+def pause_agent():
+    return _set_agent_state('paused')
 
 @app.route('/api/agent/stop', methods=['POST'])
 @login_required
 def stop_agent():
-    return jsonify({
-        'success': True,
-        'message': 'Agent stopped successfully',
-        'timestamp': datetime.now().isoformat()
-    })
+    return _set_agent_state('idle')
 
 @app.route('/api/agent/status')
 @login_required
 def agent_status():
     stats = tracker.get_stats(days=1)
     return jsonify({
-        'status': 'running',
+        'status': AGENT_STATE['status'],
+        'since': AGENT_STATE['since'],
         'applications_today': stats['total_applications'],
-        'last_activity': datetime.now().isoformat()
+        'last_activity': AGENT_STATE['last_activity'] or datetime.now().isoformat()
     })
+
+@app.route('/api/analytics/timeline')
+@login_required
+def api_analytics_timeline():
+    try:
+        days = max(1, min(request.args.get('days', 30, type=int) or 30, 365))
+        return jsonify({'days': days, 'timeline': tracker.get_timeline(days=days)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/settings', methods=['GET', 'POST'])
+@login_required
+def api_settings():
+    """Persist dashboard preferences server-side (was browser-only localStorage)."""
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        allowed = {'targetRole', 'location', 'minSalary', 'jobType', 'skills', 'companies'}
+        for key, value in data.items():
+            if key in allowed:
+                tracker.set_setting(key, str(value))
+        return jsonify({'success': True, 'settings': tracker.get_all_settings()})
+    return jsonify({'settings': tracker.get_all_settings()})
 
 @app.route('/api/applications/add', methods=['POST'])
 @login_required
@@ -286,11 +337,11 @@ def seed_test_applications():
 # Error handlers
 @app.errorhandler(404)
 def not_found(e):
-    return render_template('base.html', error="Page not found"), 404
+    return render_template('error.html', code=404, error="Page not found"), 404
 
 @app.errorhandler(500)
 def server_error(e):
-    return render_template('base.html', error="Internal server error"), 500
+    return render_template('error.html', code=500, error="Internal server error"), 500
 
 # Create startup function
 def initialize_app():

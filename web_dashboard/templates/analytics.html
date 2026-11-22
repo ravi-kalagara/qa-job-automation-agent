@@ -154,7 +154,7 @@
 {% block scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  fetch('/api/stats')
+  fetch('/api/stats?days=3650')
     .then(r => r.json())
     .then(function(data) {
       document.getElementById('totalApps').textContent = data.total_applications || 0;
@@ -182,23 +182,21 @@ document.addEventListener('DOMContentLoaded', function() {
     })
     .catch(function(e) { console.error('Stats fetch failed', e); });
 
-  var tCtx = document.getElementById('timelineChart').getContext('2d');
-  var labels = [];
-  var today = new Date();
-  for (var i = 29; i >= 0; i--) {
-    var d = new Date(today);
-    d.setDate(d.getDate() - i);
-    labels.push(d.toLocaleDateString('en-US', {month:'short', day:'numeric'}));
-  }
-  new Chart(tCtx, {
-    type: 'line',
-    data: {
-      labels: labels,
-      datasets: [{ label: 'Applications', data: Array(30).fill(0),
-        borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.1)', tension: 0.4, fill: true }]
-    },
-    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
-  });
-});
+  fetch('/api/analytics/timeline?days=30')
+    .then(r => r.json())
+    .then(function(tl) {
+      var tCtx = document.getElementById('timelineChart').getContext('2d');
+      var rows = (tl && tl.timeline) || [];
+      new Chart(tCtx, {
+        type: 'line',
+        data: {
+          labels: rows.map(function(x) { var d = new Date(x.date + 'T00:00:00'); return d.toLocaleDateString('en-US', {month:'short', day:'numeric'}); }),
+          datasets: [{ label: 'Applications', data: rows.map(function(x) { return x.count; }),
+            borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.1)', tension: 0.4, fill: true }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+      });
+    })
+    .catch(function(e) { console.error('Timeline fetch failed', e); });
 </script>
 {% endblock %}

@@ -72,6 +72,12 @@ class ApplicationTracker:
                 action TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         ''')
         self.conn.commit()
     
@@ -104,8 +110,8 @@ class ApplicationTracker:
         self.conn.execute('''
             UPDATE applications 
             SET status = ?, 
-                response_date = CASE 
-                    WHEN ? IN ('responded', 'interview', 'rejected', 'offered') 
+                response_date = CASE
+                    WHEN ? IN ('responded', 'interview', 'rejected', 'offer', 'offered')
                     THEN CURRENT_TIMESTAMP
                     ELSE response_date 
                 END,
@@ -121,31 +127,65 @@ class ApplicationTracker:
     def get_stats(self, days: int = 30) -> Dict:
         """Get application statistics"""
         cursor = self.conn.execute('''
-            SELECT 
+            SELECT
                 COUNT(*) as total_applications,
-                SUM(CASE WHEN status = 'applied' THEN 1 ELSE 0 END) as active_applications,
-                SUM(CASE WHEN status = 'interview' THEN 1 ELSE 0 END) as interviews,
-                SUM(CASE WHEN status = 'offered' THEN 1 ELSE 0 END) as offers,
-                SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejections,
-                SUM(CASE WHEN status IN ('interview', 'offered') THEN 1 ELSE 0 END) as responses_received
+                COALESCE(SUM(CASE WHEN status = 'applied' THEN 1 ELSE 0 END), 0) as active_applications,
+                COALESCE(SUM(CASE WHEN status = 'interview' THEN 1 ELSE 0 END), 0) as interviews,
+                COALESCE(SUM(CASE WHEN status IN ('offer', 'offered') THEN 1 ELSE 0 END), 0) as offers,
+                COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) as rejections,
+                COALESCE(SUM(CASE WHEN status IN ('interview', 'offer', 'offered') THEN 1 ELSE 0 END), 0) as responses_received
             FROM applications
             WHERE application_date >= datetime('now', '-' || ? || ' days')
         ''', (days,))
-        
+
         row = cursor.fetchone()
-        total = row['total_applications']
-        responses = row['responses_received']
-        
+        total = row['total_applications'] or 0
+        responses = row['responses_received'] or 0
+        interviews = row['interviews'] or 0
+        offers = row['offers'] or 0
+
         return {
             'total_applications': total,
-            'active_applications': row['active_applications'],
-            'interviews': row['interviews'],
-            'offers': row['offers'],
-            'rejections': row['rejections'],
+            'active_applications': row['active_applications'] or 0,
+            'interviews': interviews,
+            'offers': offers,
+            'rejections': row['rejections'] or 0,
             'response_rate': responses / total if total > 0 else 0,
-            'interview_rate': row['interviews'] / total if total > 0 else 0,
-            'offer_rate': row['offers'] / total if total > 0 else 0
+            'interview_rate': interviews / total if total > 0 else 0,
+            'offer_rate': offers / total if total > 0 else 0
         }
+
+    def get_timeline(self, days: int = 30) -> List[Dict]:
+        """Applications per day for the last `days` days (zero-filled)."""
+        cursor = self.conn.execute('''
+            SELECT date(application_date) as day, COUNT(*) as count
+            FROM applications
+            WHERE application_date >= datetime('now', '-' || ? || ' days')
+            GROUP BY date(application_date)
+            ORDER BY day
+        ''', (days,))
+        counts = {row['day']: row['count'] for row in cursor.fetchall()}
+        today = datetime.now().date()
+        timeline = []
+        for offset in range(days - 1, -1, -1):
+            day = today - timedelta(days=offset)
+            timeline.append({'date': day.isoformat(), 'count': counts.get(day.isoformat(), 0)})
+        return timeline
+
+    def get_setting(self, key: str, default=None):
+        row = self.conn.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+        return row['value'] if row else default
+
+    def set_setting(self, key: str, value: str):
+        self.conn.execute('''
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        ''', (key, value))
+        self.conn.commit()
+
+    def get_all_settings(self) -> Dict:
+        rows = self.conn.execute('SELECT key, value FROM settings').fetchall()
+        return {row['key']: row['value'] for row in rows}
     
     def has_applied(self, job_url: str) -> bool:
         """Check if already applied to a job"""

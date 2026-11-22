@@ -162,6 +162,15 @@
 </div>
 
 <script>
+function applyPrefs(p) {
+  if (!p) return;
+  if (p.targetRole) document.getElementById('targetRole').value = p.targetRole;
+  if (p.location) document.getElementById('location').value = p.location;
+  if (p.minSalary) document.getElementById('minSalary').value = p.minSalary;
+  if (p.jobType) document.getElementById('jobType').value = p.jobType;
+  if (p.skills) document.getElementById('skills').value = p.skills;
+  if (p.companies) document.getElementById('companies').value = p.companies;
+}
 function savePreferences() {
   var prefs = {
     targetRole: document.getElementById('targetRole').value,
@@ -171,22 +180,27 @@ function savePreferences() {
     skills: document.getElementById('skills').value,
     companies: document.getElementById('companies').value
   };
-  localStorage.setItem('jobPreferences', JSON.stringify(prefs));
-  var msg = document.getElementById('saveMsg');
-  msg.style.display = 'inline';
-  setTimeout(function(){ msg.style.display = 'none'; }, 2000);
+  fetch('/api/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(prefs) })
+    .then(function(r) { return r.json(); })
+    .then(function() {
+      localStorage.setItem('jobPreferences', JSON.stringify(prefs));
+      var msg = document.getElementById('saveMsg');
+      msg.style.display = 'inline';
+      setTimeout(function(){ msg.style.display = 'none'; }, 2000);
+    })
+    .catch(function() { alert('Could not save preferences to the server.'); });
 }
 window.onload = function() {
-  var saved = localStorage.getItem('jobPreferences');
-  if (saved) {
-    var p = JSON.parse(saved);
-    if (p.targetRole) document.getElementById('targetRole').value = p.targetRole;
-    if (p.location) document.getElementById('location').value = p.location;
-    if (p.minSalary) document.getElementById('minSalary').value = p.minSalary;
-    if (p.jobType) document.getElementById('jobType').value = p.jobType;
-    if (p.skills) document.getElementById('skills').value = p.skills;
-    if (p.companies) document.getElementById('companies').value = p.companies;
-  }
+  fetch('/api/settings').then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.settings && Object.keys(d.settings).length) { applyPrefs(d.settings); return; }
+      var saved = localStorage.getItem('jobPreferences');
+      if (saved) applyPrefs(JSON.parse(saved));
+    })
+    .catch(function() {
+      var saved = localStorage.getItem('jobPreferences');
+      if (saved) applyPrefs(JSON.parse(saved));
+    });
 };
 </script>
 {% endblock %}
