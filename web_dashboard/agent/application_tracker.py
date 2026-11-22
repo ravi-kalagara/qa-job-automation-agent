@@ -136,6 +136,7 @@ class ApplicationTracker:
                 COALESCE(SUM(CASE WHEN status IN ('interview', 'offer', 'offered') THEN 1 ELSE 0 END), 0) as responses_received
             FROM applications
             WHERE application_date >= datetime('now', '-' || ? || ' days')
+              AND status != 'matched'
         ''', (days,))
 
         row = cursor.fetchone()
@@ -144,7 +145,12 @@ class ApplicationTracker:
         interviews = row['interviews'] or 0
         offers = row['offers'] or 0
 
+        matched = self.conn.execute('''
+            SELECT COUNT(*) as c FROM applications WHERE status = 'matched'
+        ''').fetchone()['c']
+
         return {
+            'matched_jobs': matched,
             'total_applications': total,
             'active_applications': row['active_applications'] or 0,
             'interviews': interviews,

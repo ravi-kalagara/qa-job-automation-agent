@@ -62,6 +62,7 @@
         <span class="ms-2">
           Status: <span class="badge bg-secondary" id="agentStatus">Loading…</span>
         </span>
+        <div class="mt-2 small text-muted" id="lastScan">No scans yet this session. Start runs a live scan of Remote OK, Arbeitnow and Jobicy and records new QA matches — it never auto-applies.</div>
       </div>
     </div>
   </div>
@@ -148,7 +149,19 @@
   function pauseAgent() { agentAction('pause'); }
   function stopAgent() { agentAction('stop'); }
   function refreshStatus() {
-    fetch('/api/agent/status').then(r => r.json()).then(d => paintStatus(d.status)).catch(() => {});
+    fetch('/api/agent/status').then(r => r.json()).then(function(d) {
+      paintStatus(d.status);
+      var el = document.getElementById('lastScan');
+      if (el && d.last_scan) {
+        var ls = d.last_scan;
+        if (ls.error) { el.textContent = 'Last scan failed: ' + ls.error; }
+        else {
+          el.textContent = 'Last scan: ' + (ls.scanned || 0) + ' jobs scanned, ' + (ls.qa_filtered || 0) +
+            ' QA roles, ' + (ls.new_matches || 0) + ' new matches recorded (' + (ls.duplicates || 0) +
+            ' already known). Total matched jobs: ' + (d.matched_jobs || 0) + ' — see Applications, filter "Matched". Matches are never auto-applied.';
+        }
+      }
+    }).catch(() => {});
   }
   refreshStatus();
   // Poll status instead of reloading the whole page every 30s.

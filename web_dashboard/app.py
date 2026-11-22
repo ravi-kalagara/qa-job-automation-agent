@@ -19,6 +19,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
 from agent.application_tracker import ApplicationTracker
+from agent.job_engine import run_scan
+import json
+import threading
 
 app = Flask(__name__)
 
@@ -33,10 +36,18 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 CORS(app)
 
-# Initialize tracker (same DB file that scripts/init_db.py creates)
-db_path = os.path.join(BASE_DIR, 'data', 'applications.db')
+# Initialize tracker (same DB file that scripts/init_db.py creates).
+# Storage location is configurable so data can live on a persistent disk:
+#   DATABASE_PATH=/var/data/applications.db   (full file path), or
+#   DATA_DIR=/var/data                        (directory)
+# With neither set it falls back to web_dashboard/data/ — which on Render's
+# ephemeral filesystem is wiped on every deploy. Set one of them (with a
+# persistent disk mounted there) to keep data across deploys.
+db_path = os.environ.get('DATABASE_PATH') or os.path.join(
+    os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data')), 'applications.db')
 os.makedirs(os.path.dirname(db_path), exist_ok=True)
 tracker = ApplicationTracker(db_path)
+STORAGE_PERSISTENT = bool(os.environ.get('DATABASE_PATH') or os.environ.get('DATA_DIR'))
 
 # User credentials from environment variables
 # Fallback matches web_dashboard/.env.example. On Render (and any real
@@ -117,7 +128,7 @@ def dashboard():
 @login_required
 def applications():
     status_filter = request.args.get('status', 'all')
-    if status_filter not in ('all', 'applied', 'interview', 'offer', 'rejected', 'withdrawn'):
+    if status_filter not in ('all', 'applied', 'matched', 'interview', 'offer', 'rejected', 'withdrawn'):
         status_filter = 'all'
     date_range = request.args.get('range', '30')
     if date_range not in ('7', '30', '90', '365'):
@@ -204,15 +215,36 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '1.0.0'
+        'version': '1.0.0',
+        'storage_persistent': STORAGE_PERSISTENT
     })
 
-# Real (in-memory) agent control state. Previously start/stop returned
-# success without changing anything and status always said "running".
-# Note: this dashboard has no job-board scraping engine wired in, so this
-# state honestly tracks the control setting only; it does not by itself
-# submit applications anywhere.
-AGENT_STATE = {'status': 'idle', 'since': None, 'last_activity': None}
+# Agent control state. Start launches a real job scan (agent/job_engine.py)
+# in a background thread: it fetches public job-board APIs, scores postings
+# against the stored resume, and records new matches with status 'matched'.
+# It never submits an application anywhere.
+AGENT_STATE = {'status': 'idle', 'since': None, 'last_activity': None, 'last_scan': None}
+
+def _load_resume():
+    path = os.path.join(BASE_DIR, 'data', 'resume', 'ravi_kalagara_resume.json')
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {'skills': [], 'job_titles': [], 'experience_years': 0}
+
+def _scan_thread():
+    try:
+        summary = run_scan(
+            tracker, _load_resume(),
+            should_continue=lambda: AGENT_STATE['status'] == 'running')
+        AGENT_STATE['last_scan'] = summary
+    except Exception as e:
+        AGENT_STATE['last_scan'] = {'error': str(e)[:200]}
+    finally:
+        if AGENT_STATE['status'] == 'running':
+            AGENT_STATE['status'] = 'idle'
+        AGENT_STATE['last_activity'] = datetime.now().isoformat()
 
 def _set_agent_state(status):
     AGENT_STATE['status'] = status
@@ -229,7 +261,13 @@ def _set_agent_state(status):
 @app.route('/api/agent/start', methods=['POST'])
 @login_required
 def start_agent():
-    return _set_agent_state('running')
+    if AGENT_STATE['status'] == 'running':
+        return jsonify({'success': True, 'status': 'running',
+                        'message': 'Agent already running',
+                        'timestamp': AGENT_STATE['last_activity']})
+    resp = _set_agent_state('running')
+    threading.Thread(target=_scan_thread, daemon=True).start()
+    return resp
 
 @app.route('/api/agent/pause', methods=['POST'])
 @login_required
@@ -249,6 +287,8 @@ def agent_status():
         'status': AGENT_STATE['status'],
         'since': AGENT_STATE['since'],
         'applications_today': stats['total_applications'],
+        'matched_jobs': stats.get('matched_jobs', 0),
+        'last_scan': AGENT_STATE['last_scan'],
         'last_activity': AGENT_STATE['last_activity'] or datetime.now().isoformat()
     })
 
@@ -300,6 +340,44 @@ def add_application():
         return jsonify({'success': True, 'message': 'Application recorded'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backup')
+@login_required
+def backup_data():
+    """Download all applications + settings as JSON (portable backup)."""
+    apps = tracker.conn.execute('SELECT * FROM applications').fetchall()
+    return jsonify({
+        'exported_at': datetime.now().isoformat(),
+        'applications': [dict(a) for a in apps],
+        'settings': tracker.get_all_settings()
+    })
+
+@app.route('/api/restore', methods=['POST'])
+@login_required
+def restore_data():
+    """Restore a backup produced by /api/backup."""
+    data = request.get_json(silent=True) or {}
+    apps = data.get('applications', [])
+    count = 0
+    for a in apps:
+        if not a.get('job_id'):
+            continue
+        tracker.conn.execute('''
+            INSERT OR REPLACE INTO applications
+            (job_id, job_title, company, platform, application_url, match_score,
+             application_date, status, cover_letter, resume_version, response_date,
+             notes, follow_up_count, last_follow_up)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (a.get('job_id'), a.get('job_title'), a.get('company'), a.get('platform'),
+              a.get('application_url'), a.get('match_score'), a.get('application_date'),
+              a.get('status'), a.get('cover_letter'), a.get('resume_version'),
+              a.get('response_date'), a.get('notes'), a.get('follow_up_count'),
+              a.get('last_follow_up')))
+        count += 1
+    for key, value in (data.get('settings') or {}).items():
+        tracker.set_setting(key, str(value))
+    tracker.conn.commit()
+    return jsonify({'success': True, 'restored_applications': count})
 
 @app.route('/api/seed-test-applications', methods=['GET', 'POST'])
 @login_required

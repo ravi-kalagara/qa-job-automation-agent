@@ -8,10 +8,10 @@ def init_database():
     """Initialize the application database"""
     print("Initializing database...")
     
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
-    os.makedirs(data_dir, exist_ok=True)
-    
-    db_path = os.path.join(data_dir, 'applications.db')
+    default_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+    db_path = os.environ.get('DATABASE_PATH') or os.path.join(
+        os.environ.get('DATA_DIR', default_dir), 'applications.db')
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
     tracker = ApplicationTracker(db_path)
     
     print(f"Database initialized at: {db_path}")

@@ -17,6 +17,7 @@
         <select name="status" class="form-select" onchange="this.form.submit()">
           <option value="all" {% if current_filter == 'all' %}selected{% endif %}>All Status</option>
           <option value="applied" {% if current_filter == 'applied' %}selected{% endif %}>Applied</option>
+          <option value="matched" {% if current_filter == 'matched' %}selected{% endif %}>Matched (not applied)</option>
           <option value="interview" {% if current_filter == 'interview' %}selected{% endif %}>Interview</option>
           <option value="offer" {% if current_filter == 'offer' %}selected{% endif %}>Offer</option>
           <option value="rejected" {% if current_filter == 'rejected' %}selected{% endif %}>Rejected</option>
@@ -66,7 +67,9 @@
             <td>{{ app.job_title or 'N/A' }}</td>
             <td>{{ app.platform or 'N/A' }}</td>
             <td>
-              {% if app.status == 'applied' %}
+              {% if app.status == 'matched' %}
+                <span class="badge bg-info text-dark">Matched</span>
+              {% elif app.status == 'applied' %}
                 <span class="badge bg-primary">Applied</span>
               {% elif app.status == 'interview' %}
                 <span class="badge bg-success">Interview</span>

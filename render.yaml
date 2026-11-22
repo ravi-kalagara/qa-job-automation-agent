@@ -15,6 +15,9 @@ services:
         generateValue: true
       - key: PORT
         value: 10000
+      # Point the SQLite DB at the persistent disk mount (see disk note below).
+      - key: DATA_DIR
+        value: /var/data
       - key: ADMIN_USERNAME
         sync: false
       - key: ADMIN_PASSWORD
@@ -32,3 +35,15 @@ services:
       - key: LINKEDIN_API_KEY
         sync: false
     autoDeploy: true
+
+    # PERSISTENT STORAGE: Render web services have an ephemeral filesystem —
+    # the dashboard database is wiped on every deploy unless it lives on a
+    # persistent disk. Disks require a paid instance type. To enable:
+    #   1. In the Render dashboard, upgrade the service to a paid instance.
+    #   2. Add a disk (service -> Disks / Settings) mounted at /var/data, 1 GB.
+    #      (Blueprint users can uncomment the block below instead.)
+    #   3. DATA_DIR=/var/data (set above) makes the app store its DB there.
+    # disk:
+    #   name: qa-agent-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
