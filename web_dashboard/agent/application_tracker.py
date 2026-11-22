@@ -1,15 +1,13 @@
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import os
 
+from agent.db import connect as db_connect
+
 class ApplicationTracker:
     def __init__(self, db_path: str = "data/applications.db"):
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        # Postgres when DATABASE_URL is set, otherwise the SQLite file.
+        self.conn = db_connect(db_path)
         self._create_tables()
     
     def _create_tables(self):

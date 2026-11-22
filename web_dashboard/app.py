@@ -47,7 +47,7 @@ db_path = os.environ.get('DATABASE_PATH') or os.path.join(
     os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data')), 'applications.db')
 os.makedirs(os.path.dirname(db_path), exist_ok=True)
 tracker = ApplicationTracker(db_path)
-STORAGE_PERSISTENT = bool(os.environ.get('DATABASE_PATH') or os.environ.get('DATA_DIR'))
+STORAGE_PERSISTENT = bool(os.environ.get('DATABASE_URL') or os.environ.get('DATABASE_PATH') or os.environ.get('DATA_DIR'))
 
 # User credentials from environment variables
 # Fallback matches web_dashboard/.env.example. On Render (and any real
